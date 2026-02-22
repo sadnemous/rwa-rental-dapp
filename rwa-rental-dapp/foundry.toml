@@ -2,3 +2,9 @@
 src = "contracts"
 out = "out"
 libs = ["lib"]
+
+# Anvil configuration for local deployment
+[rpc_endpoints]
+anvil = "http://127.0.0.1:8545"
+localhost = "http://127.0.0.1:8545"
+

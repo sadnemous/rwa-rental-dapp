@@ -12,6 +12,12 @@ contract Deploy is Script {
         MockUSDC usdc = new MockUSDC();
         RWA1155 rwa = new RWA1155(address(usdc));
 
+        // Log addresses for easy copy-paste
+        console.log("=== Contract Deployment Addresses ===");
+        console.log("MockUSDC Address:", address(usdc));
+        console.log("RWA1155 Address:", address(rwa));
+        console.log("=====================================");
+
         vm.stopBroadcast();
     }
 }

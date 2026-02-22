@@ -132,7 +132,10 @@ func InitDB() *sql.DB {
 	CREATE TABLE IF NOT EXISTS properties (
 		id INTEGER PRIMARY KEY,
 		name TEXT,
-		location TEXT
+		location TEXT,
+		contract_address TEXT,
+		shares INTEGER,
+		rent_pool TEXT DEFAULT '0'
 	);`
 	db.Exec(sqlStmt)
 
@@ -147,9 +150,12 @@ cat > $PROJECT/backend/models/property.go <<'EOF'
 package models
 
 type Property struct {
-	ID       int
-	Name     string
-	Location string
+	ID              int
+	Name            string
+	Location        string
+	ContractAddress string
+	Shares          int64
+	RentPool        string
 }
 EOF
 
@@ -184,32 +190,148 @@ package handlers
 
 import (
 	"database/sql"
+	"fmt"
 	"net/http"
+	"strconv"
 
 	"github.com/gin-gonic/gin"
 )
 
+// ListProperties returns all properties
 func ListProperties(db *sql.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		rows, _ := db.Query("SELECT id, name, location FROM properties")
+		rows, _ := db.Query("SELECT id, name, location, contract_address, shares, rent_pool FROM properties")
 		defer rows.Close()
 
 		var props []map[string]interface{}
 
 		for rows.Next() {
 			var id int
-			var name, location string
-			rows.Scan(&id, &name, &location)
+			var name, location, contractAddr, rentPool string
+			var shares int64
+			rows.Scan(&id, &name, &location, &contractAddr, &shares, &rentPool)
 
 			props = append(props, gin.H{
-				"id": id,
-				"name": name,
-				"location": location,
+				"id":               id,
+				"name":             name,
+				"location":         location,
+				"contract_address": contractAddr,
+				"shares":           shares,
+				"rent_pool":        rentPool,
 			})
 		}
 
 		c.HTML(http.StatusOK, "index.tmpl", gin.H{
 			"properties": props,
+		})
+	}
+}
+
+// CreateProperty adds a new RWA property
+func CreateProperty(db *sql.DB) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		name := c.PostForm("name")
+		location := c.PostForm("location")
+		contractAddr := c.PostForm("contract_address")
+		sharesStr := c.PostForm("shares")
+
+		shares, err := strconv.ParseInt(sharesStr, 10, 64)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid shares"})
+			return
+		}
+
+		stmt, _ := db.Prepare("INSERT INTO properties (name, location, contract_address, shares, rent_pool) VALUES (?, ?, ?, ?, ?)")
+		result, _ := stmt.Exec(name, location, contractAddr, shares, "0")
+		id, _ := result.LastInsertId()
+
+		c.JSON(http.StatusOK, gin.H{
+			"id":               id,
+			"name":             name,
+			"location":         location,
+			"contract_address": contractAddr,
+			"shares":           shares,
+		})
+	}
+}
+
+// PayRent adds rent to a property's pool
+func PayRent(db *sql.DB) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		propertyID := c.PostForm("property_id")
+		amountStr := c.PostForm("amount")
+
+		amount, err := strconv.ParseFloat(amountStr, 64)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid amount"})
+			return
+		}
+
+		// Get current rent pool
+		var currentRent string
+		db.QueryRow("SELECT rent_pool FROM properties WHERE id = ?", propertyID).Scan(&currentRent)
+
+		currentAmount := 0.0
+		if currentRent != "" && currentRent != "0" {
+			currentAmount, _ = strconv.ParseFloat(currentRent, 64)
+		}
+
+		newTotal := fmt.Sprintf("%.2f", currentAmount+amount)
+
+		stmt, _ := db.Prepare("UPDATE properties SET rent_pool = ? WHERE id = ?")
+		stmt.Exec(newTotal, propertyID)
+
+		c.JSON(http.StatusOK, gin.H{
+			"property_id": propertyID,
+			"amount":      amount,
+			"new_total":   newTotal,
+			"message":     "Rent paid successfully",
+		})
+	}
+}
+
+// ClaimRent claims rent for a property based on shares
+func ClaimRent(db *sql.DB) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		propertyID := c.PostForm("property_id")
+		shareHolderShares := c.PostForm("holder_shares")
+
+		// Get property details
+		var rentPoolStr string
+		var totalShares int64
+		db.QueryRow("SELECT rent_pool, shares FROM properties WHERE id = ?", propertyID).Scan(&rentPoolStr, &totalShares)
+
+		rentPool := 0.0
+		if rentPoolStr != "" && rentPoolStr != "0" {
+			rentPool, _ = strconv.ParseFloat(rentPoolStr, 64)
+		}
+
+		holderShares, _ := strconv.ParseInt(shareHolderShares, 10, 64)
+
+		// Calculate claimable amount
+		if totalShares == 0 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "no total shares for this property"})
+			return
+		}
+
+		claimableAmount := (rentPool * float64(holderShares)) / float64(totalShares)
+
+		// Update rent pool (subtract claimed amount)
+		newRentPool := fmt.Sprintf("%.2f", rentPool-claimableAmount)
+		if rentPool-claimableAmount <= 0 {
+			newRentPool = "0"
+		}
+
+		stmt, _ := db.Prepare("UPDATE properties SET rent_pool = ? WHERE id = ?")
+		stmt.Exec(newRentPool, propertyID)
+
+		c.JSON(http.StatusOK, gin.H{
+			"property_id":     propertyID,
+			"holder_shares":   holderShares,
+			"total_shares":    totalShares,
+			"claimable_amount": claimableAmount,
+			"remaining_pool":   newRentPool,
+			"message":          "Rent claimed successfully",
 		})
 	}
 }
@@ -237,7 +359,11 @@ func main() {
 	r := gin.Default()
 	r.LoadHTMLGlob("../web/templates/*")
 
+	// Routes
 	r.GET("/", handlers.ListProperties(database))
+	r.POST("/property/create", handlers.CreateProperty(database))
+	r.POST("/property/pay-rent", handlers.PayRent(database))
+	r.POST("/property/claim-rent", handlers.ClaimRent(database))
 
 	r.Run(":8080")
 }
@@ -252,28 +378,166 @@ cat > $PROJECT/web/templates/index.tmpl <<'EOF'
 <head>
   <title>RWA Rental DApp</title>
   <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+  <style>
+    body { background-color: #f5f5f5; }
+    .card { border: none; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+    .btn-primary { background-color: #007bff; }
+    .form-section { background: white; padding: 30px; border-radius: 8px; margin-bottom: 30px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+    .property-card { margin-bottom: 20px; }
+    .section-title { color: #333; font-weight: 600; margin-bottom: 20px; padding-bottom: 10px; border-bottom: 2px solid #007bff; }
+  </style>
 </head>
-<body class="container mt-4">
-  <h1>RWA Rental Dashboard</h1>
+<body>
+  <div class="container mt-5">
+    <h1 class="mb-5">🏢 RWA Rental Dashboard</h1>
 
-  <table class="table">
-    <thead>
-      <tr>
-        <th>ID</th>
-        <th>Name</th>
-        <th>Location</th>
-      </tr>
-    </thead>
-    <tbody>
-      {{range .properties}}
-      <tr>
-        <td>{{.id}}</td>
-        <td>{{.name}}</td>
-        <td>{{.location}}</td>
-      </tr>
+    <!-- Create Property Section -->
+    <div class="form-section">
+      <h2 class="section-title">➕ Add New RWA Property</h2>
+      <form id="createPropertyForm">
+        <div class="row">
+          <div class="col-md-6 mb-3">
+            <label class="form-label">Property Name</label>
+            <input type="text" class="form-control" id="propertyName" name="name" placeholder="e.g., Luxury Apartment" required>
+          </div>
+          <div class="col-md-6 mb-3">
+            <label class="form-label">Location</label>
+            <input type="text" class="form-control" id="propertyLocation" name="location" placeholder="e.g., Downtown NYC" required>
+          </div>
+        </div>
+        <div class="row">
+          <div class="col-md-6 mb-3">
+            <label class="form-label">Contract Address (ERC-1155)</label>
+            <input type="text" class="form-control" id="contractAddr" name="contract_address" placeholder="0x..." required>
+          </div>
+          <div class="col-md-6 mb-3">
+            <label class="form-label">Total Shares</label>
+            <input type="number" class="form-control" id="totalShares" name="shares" placeholder="1000" required>
+          </div>
+        </div>
+        <button type="submit" class="btn btn-primary btn-lg">Add Property</button>
+      </form>
+      <div id="createMessage" class="alert alert-success mt-3" style="display:none;"></div>
+    </div>
+
+    <!-- Properties List Section -->
+    <div class="form-section">
+      <h2 class="section-title">📋 RWA Properties</h2>
+      {{if .properties}}
+        <div class="row">
+          {{range .properties}}
+          <div class="col-md-6 mb-4">
+            <div class="card property-card">
+              <div class="card-body">
+                <h5 class="card-title">{{.name}}</h5>
+                <p class="card-text"><strong>📍 Location:</strong> {{.location}}</p>
+                <p class="card-text"><strong>📝 Contract:</strong> <small>{{.contract_address}}</small></p>
+                <p class="card-text"><strong>🪙 Total Shares:</strong> {{.shares}}</p>
+                <p class="card-text"><strong>💰 Rent Pool:</strong> {{.rent_pool}} USDC</p>
+                
+                <!-- Pay Rent Form -->
+                <div class="mt-3 pt-3 border-top">
+                  <h6>Pay Rent</h6>
+                  <form class="payRentForm" data-property-id="{{.id}}">
+                    <div class="input-group mb-2">
+                      <input type="number" class="form-control" step="0.01" placeholder="Amount (USDC)" required>
+                      <button class="btn btn-success" type="submit">Pay</button>
+                    </div>
+                  </form>
+                </div>
+
+                <!-- Claim Rent Form -->
+                <div class="mt-3 pt-3 border-top">
+                  <h6>Claim Rent</h6>
+                  <form class="claimRentForm" data-property-id="{{.id}}">
+                    <div class="input-group mb-2">
+                      <input type="number" class="form-control" placeholder="Your Shares" required>
+                      <button class="btn btn-info" type="submit">Claim</button>
+                    </div>
+                  </form>
+                </div>
+              </div>
+            </div>
+          </div>
+          {{end}}
+        </div>
+      {{else}}
+        <div class="alert alert-info">No properties yet. Create one above!</div>
       {{end}}
-    </tbody>
-  </table>
+    </div>
+
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+  <script>
+    // Create Property
+    document.getElementById('createPropertyForm').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const formData = new FormData(e.target);
+      try {
+        const response = await fetch('/property/create', {
+          method: 'POST',
+          body: formData
+        });
+        const data = await response.json();
+        const msg = document.getElementById('createMessage');
+        msg.textContent = '✅ Property created successfully! Refresh to see it.';
+        msg.style.display = 'block';
+        e.target.reset();
+        setTimeout(() => location.reload(), 2000);
+      } catch (err) {
+        alert('Error: ' + err.message);
+      }
+    });
+
+    // Pay Rent
+    document.querySelectorAll('.payRentForm').forEach(form => {
+      form.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const propertyId = form.dataset.propertyId;
+        const amount = form.querySelector('input[type="number"]').value;
+        const formData = new FormData();
+        formData.append('property_id', propertyId);
+        formData.append('amount', amount);
+        
+        try {
+          const response = await fetch('/property/pay-rent', {
+            method: 'POST',
+            body: formData
+          });
+          const data = await response.json();
+          alert('✅ Rent paid: ' + data.amount + ' USDC\nNew Pool: ' + data.new_total);
+          location.reload();
+        } catch (err) {
+          alert('Error: ' + err.message);
+        }
+      });
+    });
+
+    // Claim Rent
+    document.querySelectorAll('.claimRentForm').forEach(form => {
+      form.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const propertyId = form.dataset.propertyId;
+        const holderShares = form.querySelector('input[type="number"]').value;
+        const formData = new FormData();
+        formData.append('property_id', propertyId);
+        formData.append('holder_shares', holderShares);
+        
+        try {
+          const response = await fetch('/property/claim-rent', {
+            method: 'POST',
+            body: formData
+          });
+          const data = await response.json();
+          alert('✅ Rent claimed!\nAmount: ' + data.claimable_amount.toFixed(2) + ' USDC\nRemaining Pool: ' + data.remaining_pool);
+          location.reload();
+        } catch (err) {
+          alert('Error: ' + err.message);
+        }
+      });
+    });
+  </script>
 </body>
 </html>
 EOF

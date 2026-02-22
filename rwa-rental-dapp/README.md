@@ -254,3 +254,139 @@ go run main.go
 
 ### 5. Access the Application
 Open http://localhost:8080 in your browser
+
+---
+
+## Troubleshooting
+
+### Port 8080 is Already in Use
+
+If you get an error like "Address already in use" or port 8080 is occupied, follow these steps:
+
+#### Check What's Using Port 8080
+
+```bash
+# Method 1: Show process using port 8080
+lsof -i :8080
+
+# Method 2: Alternative using netstat
+netstat -tlnp | grep 8080
+
+# Method 3: Simple test with curl
+curl http://localhost:8080
+```
+
+**If you see output with `go` process:**
+- Your Go backend is already running
+- Either keep it as is, or kill it and restart fresh
+
+**If you see output with a different process:**
+- Another service is using port 8080
+- Either stop that service or change the Go backend port
+
+#### Kill the Process Using Port 8080
+
+**Option 1: Kill by process name**
+```bash
+pkill -f "go run main.go"
+```
+
+**Option 2: Kill by PID (Process ID)**
+```bash
+# Get the PID
+PID=$(lsof -t -i:8080)
+
+# Kill the process
+kill -9 $PID
+```
+
+**Option 3: One-liner**
+```bash
+kill -9 $(lsof -t -i:8080)
+```
+
+#### Restart the Backend
+
+After killing the process:
+
+```bash
+cd ~/Documents/porasuno/Hackathon-2026/rwa-rental-dapp/rwa-rental-dapp
+rm -f rwa.db  # Optional: clean database
+go run main.go
+```
+
+**Expected output:**
+```
+[GIN-debug] Listening and serving HTTP on :8080
+```
+
+#### Change the Port (Alternative Solution)
+
+If you want to run the backend on a different port (e.g., 8081), you can modify `main.go`:
+
+Find this line:
+```go
+r.Run(":8080")
+```
+
+Change it to:
+```go
+r.Run(":8081")
+```
+
+Then restart:
+```bash
+go run main.go
+```
+
+Access at: `http://localhost:8081`
+
+---
+
+### Check if Service is Running
+
+Use these commands to verify services are running:
+
+```bash
+# Check if Anvil is running (port 8545)
+lsof -i :8545
+
+# Check if Go backend is running (port 8080)
+lsof -i :8080
+
+# Check if both are running
+lsof -i :8545 && lsof -i :8080 && echo "✅ All services running" || echo "❌ Some services not running"
+```
+
+---
+
+### Other Common Issues
+
+**Anvil: command not found**
+```bash
+# Reinstall Foundry
+curl -L https://foundry.paradigm.xyz | bash
+source ~/.bashrc
+foundryup
+```
+
+**Contract code is empty**
+- Anvil was restarted (blockchain state is in-memory, not persisted)
+- Redeploy contracts:
+```bash
+forge script script/Deploy.s.sol --rpc-url http://127.0.0.1:8545 --broadcast --sender 0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266 --unlocked
+```
+
+**Import errors in Go**
+```bash
+cd ~/Documents/porasuno/Hackathon-2026/rwa-rental-dapp/rwa-rental-dapp
+go mod tidy
+go run main.go
+```
+
+**Database locked**
+```bash
+# Delete and recreate database
+rm -f rwa.db
+go run main.go
+```
