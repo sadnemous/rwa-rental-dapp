@@ -1,0 +1,44 @@
+# Video files
+*.mp4
+*.webm
+*.avi
+*.mov
+*.mkv
+
+# Database
+*.db
+*.sqlite
+*.sqlite3
+
+# Node modules
+node_modules/
+
+# Foundry
+cache/
+out/
+broadcast/
+
+# Go
+*.o
+*.a
+*.so
+__pycache__/
+
+# Environment
+.env
+.env.local
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Build
+dist/
+build/
